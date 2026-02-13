@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     OPENROUTER_SITE_URL: str = ""
     OPENROUTER_APP_NAME: str = "podlistener"
     AUDIO_DIR: str = "/data/audio"
+    AUDIO_DOWNLOAD_TIMEOUT_SECONDS: int = 900
+    AUDIO_DOWNLOAD_MAX_BYTES: int = 524288000
+    TRANSCRIPTION_TIMEOUT_SECONDS: int = 900
+    PROCESS_EPISODE_SOFT_TIME_LIMIT_SECONDS: int = 1800
+    PROCESS_EPISODE_TIME_LIMIT_SECONDS: int = 2100
     INITIAL_IMPORT_EPISODE_LIMIT: int = 10
 
     model_config = {"env_file": ".env"}

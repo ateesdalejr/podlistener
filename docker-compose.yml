@@ -79,18 +79,25 @@ services:
         condition: service_healthy
     command: >
       celery -A app.worker.celery_app worker
-      --beat --loglevel=info
+      --beat --events --loglevel=info
       -Q default,poll,process
       --concurrency=4
 
   flower:
     image: mher/flower
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
+    env_file: .env
+    command: >
+      celery
+      --broker=${REDIS_URL}
+      flower
+      --port=5555
     ports:
       - "5555:5555"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
 
   frontend:
     build: ./frontend

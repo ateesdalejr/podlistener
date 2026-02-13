@@ -15,6 +15,8 @@ celery.conf.update(
     accept_content=["json"],
     result_serializer="json",
     timezone="UTC",
+    worker_send_task_events=True,
+    task_send_sent_event=True,
     task_routes={
         "app.worker.tasks.poll.*": {"queue": "poll"},
         "app.worker.tasks.process.*": {"queue": "process"},

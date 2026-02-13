@@ -1,8 +1,10 @@
 import os
 import logging
 import uuid
+import time
 
 import httpx
+from celery import chain
 
 from app.worker.celery_app import celery
 from app.database import SyncSessionLocal
@@ -15,9 +17,31 @@ from app.services.enrichment_service import enrich_mention
 logger = logging.getLogger(__name__)
 
 
-@celery.task(name="app.worker.tasks.process.process_episode", bind=True, max_retries=2)
+@celery.task(
+    name="app.worker.tasks.process.process_episode",
+    bind=True,
+    max_retries=0,
+)
 def process_episode(self, episode_id: str):
-    """Full pipeline: download → transcribe → detect → enrich."""
+    """Orchestrate the processing chain for one episode."""
+    logger.info("Episode %s: queueing processing chain", episode_id)
+    chain(
+        download_episode_audio.s(episode_id),
+        transcribe_episode_audio.s(),
+        detect_episode_keywords.s(),
+        enrich_episode_mentions.s(),
+    ).delay()
+
+
+@celery.task(
+    name="app.worker.tasks.process.download_episode_audio",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=settings.PROCESS_EPISODE_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=settings.PROCESS_EPISODE_TIME_LIMIT_SECONDS,
+)
+def download_episode_audio(self, episode_id: str):
+    """Download episode audio to disk and hand off to pipeline task."""
     with SyncSessionLocal() as db:
         episode = db.query(Episode).filter(Episode.id == episode_id).first()
         if not episode:
@@ -26,46 +50,145 @@ def process_episode(self, episode_id: str):
             return
 
         try:
-            # Step 1: Download
+            logger.info("Episode %s: starting download", episode_id)
             _update_status(db, episode, "downloading")
-            audio_path = _download_audio(episode.audio_url, episode_id)
+            _download_audio(episode.audio_url, episode_id)
+            logger.info("Episode %s: download completed", episode_id)
+            return episode_id
 
-            # Step 2: Transcribe
+        except Exception as exc:
+            logger.exception("Audio download failed for episode %s", episode_id)
+            _mark_episode_failed(db, episode, exc)
+            self.retry(countdown=120, exc=exc)
+
+
+@celery.task(
+    name="app.worker.tasks.process.transcribe_episode_audio",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=settings.PROCESS_EPISODE_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=settings.PROCESS_EPISODE_TIME_LIMIT_SECONDS,
+)
+def transcribe_episode_audio(self, episode_id: str):
+    """Transcribe previously downloaded audio and persist transcript."""
+    with SyncSessionLocal() as db:
+        episode = db.query(Episode).filter(Episode.id == episode_id).first()
+        if not episode:
+            logger.warning("Episode %s not found yet; retrying", episode_id)
+            self.retry(countdown=10, exc=ValueError(f"Episode {episode_id} not found"))
+            return
+
+        audio_path = _audio_path(episode_id)
+        if not os.path.exists(audio_path):
+            logger.warning("Episode %s audio file missing; retrying", episode_id)
+            self.retry(countdown=30, exc=FileNotFoundError(audio_path))
+            return
+
+        try:
+            logger.info("Episode %s: starting transcription", episode_id)
             _update_status(db, episode, "transcribing")
             transcript = transcribe_audio(audio_path)
             episode.transcript_text = transcript
             db.commit()
+            logger.info("Episode %s: transcription complete", episode_id)
+            return episode_id
 
-            # Clean up audio file
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
+        except Exception as exc:
+            logger.exception("Transcription failed for episode %s", episode_id)
+            _mark_episode_failed(db, episode, exc)
+            self.retry(countdown=120, exc=exc)
 
-            # Step 3: Detect keywords
+
+@celery.task(
+    name="app.worker.tasks.process.detect_episode_keywords",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=settings.PROCESS_EPISODE_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=settings.PROCESS_EPISODE_TIME_LIMIT_SECONDS,
+)
+def detect_episode_keywords(self, episode_id: str):
+    """Detect keyword matches from an episode transcript."""
+    with SyncSessionLocal() as db:
+        episode = db.query(Episode).filter(Episode.id == episode_id).first()
+        if not episode:
+            logger.warning("Episode %s not found yet; retrying", episode_id)
+            self.retry(countdown=10, exc=ValueError(f"Episode {episode_id} not found"))
+            return
+        if not episode.transcript_text:
+            logger.warning("Episode %s transcript missing; retrying", episode_id)
+            self.retry(countdown=30, exc=ValueError(f"Episode {episode_id} transcript missing"))
+            return
+
+        try:
+            logger.info("Episode %s: starting keyword detection", episode_id)
             _update_status(db, episode, "analyzing")
             keywords = db.query(Keyword).all()
             if not keywords:
                 _update_status(db, episode, "completed")
-                return
+                logger.info("Episode %s: completed (no keywords)", episode_id)
+                return {"episode_id": episode_id, "matches": []}
 
             kw_dicts = [
                 {"id": str(k.id), "phrase": k.phrase, "match_type": k.match_type}
                 for k in keywords
             ]
-            matches = detect_keywords(transcript, kw_dicts)
+            matches = detect_keywords(episode.transcript_text, kw_dicts)
+            logger.info("Episode %s: found %s matches", episode_id, len(matches))
+            return {
+                "episode_id": episode_id,
+                "matches": [
+                    {
+                        "keyword_id": match.keyword_id,
+                        "phrase": match.phrase,
+                        "matched_text": match.matched_text,
+                        "transcript_segment": match.transcript_segment,
+                    }
+                    for match in matches
+                ],
+            }
 
+        except Exception as exc:
+            logger.exception("Keyword detection failed for episode %s", episode_id)
+            _mark_episode_failed(db, episode, exc)
+            self.retry(countdown=120, exc=exc)
+
+
+@celery.task(
+    name="app.worker.tasks.process.enrich_episode_mentions",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=settings.PROCESS_EPISODE_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=settings.PROCESS_EPISODE_TIME_LIMIT_SECONDS,
+)
+def enrich_episode_mentions(self, detection_result: dict):
+    """Enrich detected matches and persist mentions."""
+    episode_id = detection_result["episode_id"]
+    matches = detection_result.get("matches", [])
+    audio_path = _audio_path(episode_id)
+
+    with SyncSessionLocal() as db:
+        episode = db.query(Episode).filter(Episode.id == episode_id).first()
+        if not episode:
+            logger.warning("Episode %s not found yet; retrying", episode_id)
+            self.retry(countdown=10, exc=ValueError(f"Episode {episode_id} not found"))
+            return
+
+        try:
             if not matches:
                 _update_status(db, episode, "completed")
+                logger.info("Episode %s: completed (no matches)", episode_id)
                 return
 
-            # Step 4: Enrich each match with Ollama
-            for match in matches:
-                enrichment = enrich_mention(match.phrase, match.transcript_segment)
+            logger.info("Episode %s: enriching %s matches", episode_id, len(matches))
+            db.query(Mention).filter(Mention.episode_id == episode.id).delete(synchronize_session=False)
 
+            for match in matches:
+                enrichment = enrich_mention(match["phrase"], match["transcript_segment"])
                 mention = Mention(
                     episode_id=episode.id,
-                    keyword_id=uuid.UUID(match.keyword_id),
-                    matched_text=match.matched_text,
-                    transcript_segment=match.transcript_segment,
+                    keyword_id=uuid.UUID(match["keyword_id"]),
+                    matched_text=match["matched_text"],
+                    transcript_segment=match["transcript_segment"],
                     sentiment=enrichment["sentiment"],
                     sentiment_score=enrichment["sentiment_score"],
                     context_summary=enrichment["context_summary"],
@@ -78,13 +201,15 @@ def process_episode(self, episode_id: str):
                 db.add(mention)
 
             _update_status(db, episode, "completed")
+            logger.info("Episode %s: completed", episode_id)
 
         except Exception as exc:
-            logger.exception(f"Processing failed for episode {episode_id}")
-            episode.status = "failed"
-            episode.error_message = str(exc)[:500]
-            db.commit()
+            logger.exception("Enrichment failed for episode %s", episode_id)
+            _mark_episode_failed(db, episode, exc)
             self.retry(countdown=120, exc=exc)
+        finally:
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
 
 
 def _update_status(db, episode, status):
@@ -92,15 +217,37 @@ def _update_status(db, episode, status):
     db.commit()
 
 
+def _mark_episode_failed(db, episode, exc: Exception):
+    episode.status = "failed"
+    episode.error_message = str(exc)[:500]
+    db.commit()
+
+
+def _audio_path(episode_id: str) -> str:
+    return os.path.join(settings.AUDIO_DIR, f"{episode_id}.mp3")
+
+
 def _download_audio(audio_url: str, episode_id: str) -> str:
     """Stream download audio to disk."""
     os.makedirs(settings.AUDIO_DIR, exist_ok=True)
-    audio_path = os.path.join(settings.AUDIO_DIR, f"{episode_id}.mp3")
+    audio_path = _audio_path(episode_id)
+    started_at = time.monotonic()
+    bytes_written = 0
 
-    with httpx.stream("GET", audio_url, follow_redirects=True, timeout=300.0) as resp:
+    timeout = httpx.Timeout(connect=20.0, read=30.0, write=30.0, pool=20.0)
+    with httpx.stream("GET", audio_url, follow_redirects=True, timeout=timeout) as resp:
         resp.raise_for_status()
         with open(audio_path, "wb") as f:
             for chunk in resp.iter_bytes(chunk_size=8192):
                 f.write(chunk)
+                bytes_written += len(chunk)
+                if bytes_written > settings.AUDIO_DOWNLOAD_MAX_BYTES:
+                    raise RuntimeError(
+                        f"Audio exceeds max size ({settings.AUDIO_DOWNLOAD_MAX_BYTES} bytes)"
+                    )
+                if time.monotonic() - started_at > settings.AUDIO_DOWNLOAD_TIMEOUT_SECONDS:
+                    raise RuntimeError(
+                        f"Audio download exceeded {settings.AUDIO_DOWNLOAD_TIMEOUT_SECONDS} seconds"
+                    )
 
     return audio_path

@@ -23,7 +23,7 @@ def transcribe_audio(audio_path: str) -> str:
             headers=headers,
             files={"file": ("audio.mp3", f, "audio/mpeg")},
             data={"model": settings.TRANSCRIPTION_MODEL, "response_format": "text"},
-            timeout=600.0,
+            timeout=settings.TRANSCRIPTION_TIMEOUT_SECONDS,
         )
 
     response.raise_for_status()
