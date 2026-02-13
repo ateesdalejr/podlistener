@@ -2,6 +2,8 @@ import os
 import logging
 import uuid
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 from celery import chain
@@ -29,7 +31,6 @@ def process_episode(self, episode_id: str):
         download_episode_audio.s(episode_id),
         transcribe_episode_audio.s(),
         detect_episode_keywords.s(),
-        enrich_episode_mentions.s(),
     ).delay()
 
 
@@ -66,6 +67,7 @@ def download_episode_audio(self, episode_id: str):
     name="app.worker.tasks.process.transcribe_episode_audio",
     bind=True,
     max_retries=2,
+    rate_limit=settings.TRANSCRIPTION_TASK_RATE_LIMIT,
     soft_time_limit=settings.PROCESS_EPISODE_SOFT_TIME_LIMIT_SECONDS,
     time_limit=settings.PROCESS_EPISODE_TIME_LIMIT_SECONDS,
 )
@@ -94,9 +96,23 @@ def transcribe_episode_audio(self, episode_id: str):
             return {"episode_id": episode_id, "transcription_done": True}
 
         except Exception as exc:
-            logger.exception("Transcription failed for episode %s", episode_id)
-            _mark_episode_failed(db, episode, exc)
-            self.retry(countdown=120, exc=exc)
+            countdown = _transcription_retry_countdown(exc, self.request.retries)
+            retries_used = int(self.request.retries or 0)
+            max_retries = int(self.max_retries or 0)
+            if retries_used >= max_retries:
+                logger.exception("Transcription failed for episode %s (retries exhausted)", episode_id)
+                _mark_episode_failed(db, episode, exc)
+                raise
+
+            logger.warning(
+                "Transcription failed for episode %s; retrying in %ss (attempt %s/%s)",
+                episode_id,
+                countdown,
+                retries_used + 1,
+                max_retries,
+                exc_info=exc,
+            )
+            self.retry(countdown=countdown, exc=exc)
 
 
 @celery.task(
@@ -148,7 +164,7 @@ def detect_episode_keywords(self, transcription_result):
             ]
             matches = detect_keywords(episode.transcript_text, kw_dicts)
             logger.info("Episode %s: found %s matches", episode_id, len(matches))
-            return {
+            detection_payload = {
                 "episode_id": episode_id,
                 "matches": [
                     {
@@ -160,6 +176,10 @@ def detect_episode_keywords(self, transcription_result):
                     for match in matches
                 ],
             }
+            # Queue enrichment explicitly so direct/manual keyword detection runs
+            # still trigger LLM processing and mention persistence.
+            enrich_episode_mentions.apply_async(args=[detection_payload], queue="llm")
+            return detection_payload
 
         except Exception as exc:
             logger.exception("Keyword detection failed for episode %s", episode_id)
@@ -265,3 +285,37 @@ def _download_audio(audio_url: str, episode_id: str) -> str:
                     )
 
     return audio_path
+
+
+def _transcription_retry_countdown(exc: Exception, retries_used: int) -> int:
+    """Compute retry delay with 429-aware exponential backoff."""
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+        if exc.response.status_code == 429:
+            retry_after = _parse_retry_after_seconds(exc.response.headers.get("Retry-After"))
+            if retry_after is not None:
+                return max(30, min(retry_after, settings.TRANSCRIPTION_429_RETRY_MAX_SECONDS))
+
+            base = max(30, settings.TRANSCRIPTION_429_RETRY_BASE_SECONDS)
+            countdown = base * (2 ** max(0, retries_used))
+            return min(countdown, settings.TRANSCRIPTION_429_RETRY_MAX_SECONDS)
+
+    return 120
+
+
+def _parse_retry_after_seconds(raw_value: str | None) -> int | None:
+    if not raw_value:
+        return None
+
+    value = raw_value.strip()
+    if value.isdigit():
+        return int(value)
+
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except Exception:
+        return None
+
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    seconds = int((retry_at - datetime.now(timezone.utc)).total_seconds())
+    return max(0, seconds)

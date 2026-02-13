@@ -35,7 +35,7 @@ def enrich_mention(keyword: str, segment: str) -> dict:
         parsed = json.loads(content)
         return _validate_enrichment(parsed)
     except Exception:
-        logger.exception("Enrichment failed")
+        logger.exception("Enrichment failed for provider '%s'", settings.LLM_PROVIDER)
         return _default_enrichment()
 
 
@@ -64,7 +64,7 @@ def _call_llm(prompt: str) -> str:
         result = response.json()
         return result["choices"][0]["message"]["content"]
 
-    response = httpx.post(
+    chat_response = httpx.post(
         f"{settings.OLLAMA_BASE_URL}/api/chat",
         json={
             "model": settings.OLLAMA_MODEL,
@@ -74,9 +74,43 @@ def _call_llm(prompt: str) -> str:
         },
         timeout=120.0,
     )
-    response.raise_for_status()
-    result = response.json()
+    if chat_response.status_code == 404:
+        _raise_ollama_model_error_if_needed(chat_response)
+        logger.warning("Ollama /api/chat returned 404, trying /api/generate fallback")
+        generate_response = httpx.post(
+            f"{settings.OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": settings.OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+            },
+            timeout=120.0,
+        )
+        if generate_response.status_code == 404:
+            _raise_ollama_model_error_if_needed(generate_response)
+        generate_response.raise_for_status()
+        result = generate_response.json()
+        return result["response"]
+
+    chat_response.raise_for_status()
+    result = chat_response.json()
     return result["message"]["content"]
+
+
+def _raise_ollama_model_error_if_needed(response: httpx.Response) -> None:
+    try:
+        payload = response.json()
+    except Exception:
+        return
+
+    error_text = str(payload.get("error", "")).lower()
+    model = settings.OLLAMA_MODEL
+    if "model" in error_text and "not found" in error_text:
+        raise RuntimeError(
+            f"Ollama model '{model}' not found. Pull it first (e.g. `make pull-model` or "
+            f"`docker compose exec ollama ollama pull {model}`)."
+        )
 
 
 def _validate_enrichment(data: dict) -> dict:
