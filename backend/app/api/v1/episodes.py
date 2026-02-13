@@ -55,3 +55,22 @@ async def reprocess_episode(episode_id: UUID, db: AsyncSession = Depends(get_db)
     process_episode.delay(str(episode_id))
 
     return {"status": "reprocessing", "episode_id": str(episode_id)}
+
+
+@router.post("/{episode_id}/retry-enrichment", status_code=202)
+async def retry_episode_enrichment(episode_id: UUID, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Episode).where(Episode.id == episode_id))
+    episode = result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    if not episode.transcript_text:
+        raise HTTPException(status_code=409, detail="Cannot retry enrichment without transcript")
+
+    episode.status = "analyzing"
+    episode.error_message = None
+    await db.commit()
+
+    from app.worker.tasks.process import detect_episode_keywords
+
+    detect_episode_keywords.delay({"episode_id": str(episode_id), "transcription_done": True})
+    return {"status": "retrying_enrichment", "episode_id": str(episode_id)}

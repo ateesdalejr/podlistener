@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     OPENROUTER_MODEL: str = "openai/gpt-4o-mini"
     OPENROUTER_SITE_URL: str = ""
     OPENROUTER_APP_NAME: str = "podlistener"
+    LLM_ENRICH_MIN_INTERVAL_SECONDS: float = 0.0
+    LLM_ENRICH_MAX_RETRIES: int = 2
+    LLM_ENRICH_RETRY_BASE_SECONDS: float = 2.0
+    LLM_ENRICH_RETRY_MAX_SECONDS: float = 60.0
     AUDIO_DIR: str = "/data/audio"
     AUDIO_DOWNLOAD_TIMEOUT_SECONDS: int = 900
     AUDIO_DOWNLOAD_MAX_BYTES: int = 524288000

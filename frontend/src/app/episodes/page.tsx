@@ -105,6 +105,20 @@ export default function EpisodesPage() {
     }
   };
 
+  const handleRetryEnrichment = async () => {
+    if (!detail?.id) return;
+    if (!confirm("Retry enrichment/detection for this episode?")) return;
+    try {
+      await api.retryEnrichmentEpisode(detail.id);
+      setDetail({ ...detail, status: "analyzing", error_message: null });
+      setEpisodes((prev) =>
+        prev.map((ep) => (ep.id === detail.id ? { ...ep, status: "analyzing" } : ep)),
+      );
+    } catch (err: any) {
+      setError(err.message || "Failed to retry enrichment");
+    }
+  };
+
   const downloadTranscript = () => {
     if (!detail?.transcript_text) return;
     const blob = new Blob([detail.transcript_text], { type: "text/plain;charset=utf-8" });
@@ -232,6 +246,15 @@ export default function EpisodesPage() {
               >
                 <RefreshCw className="w-3 h-3" />
                 Reprocess
+              </button>
+              <button
+                onClick={handleRetryEnrichment}
+                disabled={!detail?.transcript_text}
+                className="px-3 py-1.5 text-xs border rounded-md hover:bg-gray-50 disabled:opacity-50 flex items-center gap-1"
+                title={!detail?.transcript_text ? "Transcript required" : "Retry detection + enrichment only"}
+              >
+                <RefreshCw className="w-3 h-3" />
+                Retry Enrich
               </button>
               <button
                 onClick={downloadTranscript}

@@ -2,6 +2,7 @@
 import json
 from unittest.mock import patch, MagicMock
 
+from app.services import enrichment_service
 from app.services.enrichment_service import enrich_mention, _validate_enrichment, _default_enrichment
 
 
@@ -53,6 +54,9 @@ class TestDefaultEnrichment:
 
 
 class TestEnrichMention:
+    def setup_method(self):
+        enrichment_service._NEXT_ALLOWED_TS = 0.0
+
     @patch("app.services.enrichment_service.httpx.post")
     def test_successful_enrichment(self, mock_post):
         mock_response = MagicMock()
@@ -83,6 +87,15 @@ class TestEnrichMention:
         result = enrich_mention("Acme Corp", "some text")
         assert result["sentiment"] == "neutral"
         assert result["context_summary"] == "Enrichment unavailable"
+
+    @patch("app.services.enrichment_service.httpx.post")
+    def test_failed_enrichment_raises_in_strict_mode(self, mock_post):
+        mock_post.side_effect = Exception("Connection refused")
+
+        import pytest
+
+        with pytest.raises(Exception, match="Connection refused"):
+            enrich_mention("Acme Corp", "some text", raise_on_error=True)
 
     @patch("app.services.enrichment_service.httpx.post")
     def test_invalid_json_returns_default(self, mock_post):
@@ -168,3 +181,72 @@ class TestEnrichMention:
             settings.LLM_PROVIDER = old_provider
             settings.OPENROUTER_API_KEY = old_key
             settings.OPENROUTER_BASE_URL = old_base
+
+    @patch("app.services.enrichment_service.time.sleep")
+    @patch("app.services.enrichment_service.httpx.post")
+    def test_retries_429_then_succeeds(self, mock_post, mock_sleep):
+        from app.config import settings
+
+        old_retries = settings.LLM_ENRICH_MAX_RETRIES
+        old_base = settings.LLM_ENRICH_RETRY_BASE_SECONDS
+        old_max = settings.LLM_ENRICH_RETRY_MAX_SECONDS
+        try:
+            settings.LLM_ENRICH_MAX_RETRIES = 1
+            settings.LLM_ENRICH_RETRY_BASE_SECONDS = 1
+            settings.LLM_ENRICH_RETRY_MAX_SECONDS = 30
+
+            response_429 = MagicMock()
+            response_429.status_code = 429
+            response_429.headers = {"Retry-After": "2"}
+
+            response_200 = MagicMock()
+            response_200.status_code = 200
+            response_200.headers = {}
+            response_200.json.return_value = {
+                "message": {"content": json.dumps({"sentiment": "neutral"})}
+            }
+
+            mock_post.side_effect = [response_429, response_200]
+
+            result = enrich_mention("Acme Corp", "some text")
+            assert result["sentiment"] == "neutral"
+            assert mock_post.call_count == 2
+            mock_sleep.assert_called_once_with(2.0)
+        finally:
+            settings.LLM_ENRICH_MAX_RETRIES = old_retries
+            settings.LLM_ENRICH_RETRY_BASE_SECONDS = old_base
+            settings.LLM_ENRICH_RETRY_MAX_SECONDS = old_max
+
+    @patch("app.services.enrichment_service.time.sleep")
+    @patch("app.services.enrichment_service.time.monotonic")
+    @patch("app.services.enrichment_service.httpx.post")
+    def test_rate_limit_applies_between_chat_and_fallback(self, mock_post, mock_monotonic, mock_sleep):
+        from app.config import settings
+
+        old_min_interval = settings.LLM_ENRICH_MIN_INTERVAL_SECONDS
+        try:
+            settings.LLM_ENRICH_MIN_INTERVAL_SECONDS = 0.25
+
+            response_404 = MagicMock()
+            response_404.status_code = 404
+            response_404.headers = {}
+            response_404.json.return_value = {"error": "not found"}
+
+            response_200 = MagicMock()
+            response_200.status_code = 200
+            response_200.headers = {}
+            response_200.json.return_value = {
+                "response": json.dumps({"sentiment": "neutral"})
+            }
+
+            mock_post.side_effect = [response_404, response_200]
+            mock_monotonic.side_effect = [100.0, 100.1, 100.25]
+
+            result = enrich_mention("Acme Corp", "some text")
+            assert result["sentiment"] == "neutral"
+            assert mock_post.call_count == 2
+            assert mock_sleep.call_count == 1
+            waited = mock_sleep.call_args.args[0]
+            assert abs(waited - 0.15) < 1e-6
+        finally:
+            settings.LLM_ENRICH_MIN_INTERVAL_SECONDS = old_min_interval

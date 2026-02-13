@@ -29,6 +29,7 @@ cp .env.example .env
 - `NGINX_BASIC_AUTH_USERNAME` / `NGINX_BASIC_AUTH_PASSWORD` for the web UI login
 - `OLLAMA_MODEL` if you want a different local model
 - `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` if you want to use OpenRouter instead of local Ollama
+- `LLM_ENRICH_MIN_INTERVAL_SECONDS`, `LLM_ENRICH_MAX_RETRIES`, and retry delay settings to tune LLM enrichment pacing/backoff
 
 4. Start everything.
 

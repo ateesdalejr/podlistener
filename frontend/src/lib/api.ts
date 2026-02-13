@@ -54,6 +54,10 @@ export const api = {
     apiFetch<{ status: string }>(`/api/v1/episodes/${id}/reprocess`, {
       method: "POST",
     }),
+  retryEnrichmentEpisode: (id: string) =>
+    apiFetch<{ status: string }>(`/api/v1/episodes/${id}/retry-enrichment`, {
+      method: "POST",
+    }),
 
   // Keywords
   getKeywords: () => apiFetch<Keyword[]>("/api/v1/keywords"),

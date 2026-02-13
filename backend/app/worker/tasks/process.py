@@ -198,6 +198,7 @@ def enrich_episode_mentions(self, detection_result: dict):
     """Enrich detected matches and persist mentions."""
     episode_id = detection_result["episode_id"]
     matches = detection_result.get("matches", [])
+    start_index = int(detection_result.get("start_index", 0))
     audio_path = _audio_path(episode_id)
 
     with SyncSessionLocal() as db:
@@ -213,14 +214,44 @@ def enrich_episode_mentions(self, detection_result: dict):
                 logger.info("Episode %s: completed (no matches)", episode_id)
                 return
 
-            logger.info("Episode %s: enriching %s matches", episode_id, len(matches))
-            db.query(Mention).filter(Mention.episode_id == episode.id).delete(synchronize_session=False)
+            start_index = max(0, min(start_index, len(matches)))
+            logger.info(
+                "Episode %s: enriching %s matches (starting at index %s)",
+                episode_id,
+                len(matches),
+                start_index,
+            )
+            next_index = start_index
+            if start_index == 0:
+                db.query(Mention).filter(Mention.episode_id == episode.id).delete(synchronize_session=False)
+                db.commit()
 
-            for match in matches:
-                enrichment = enrich_mention(match["phrase"], match["transcript_segment"])
+            while next_index < len(matches):
+                match = matches[next_index]
+                keyword_id = uuid.UUID(match["keyword_id"])
+
+                existing = (
+                    db.query(Mention)
+                    .filter(
+                        Mention.episode_id == episode.id,
+                        Mention.keyword_id == keyword_id,
+                        Mention.matched_text == match["matched_text"],
+                        Mention.transcript_segment == match["transcript_segment"],
+                    )
+                    .first()
+                )
+                if existing:
+                    next_index += 1
+                    continue
+
+                enrichment = enrich_mention(
+                    match["phrase"],
+                    match["transcript_segment"],
+                    raise_on_error=True,
+                )
                 mention = Mention(
                     episode_id=episode.id,
-                    keyword_id=uuid.UUID(match["keyword_id"]),
+                    keyword_id=keyword_id,
                     matched_text=match["matched_text"],
                     transcript_segment=match["transcript_segment"],
                     sentiment=enrichment["sentiment"],
@@ -233,14 +264,32 @@ def enrich_episode_mentions(self, detection_result: dict):
                     raw_llm_response=enrichment,
                 )
                 db.add(mention)
+                db.commit()
+                next_index += 1
 
             _update_status(db, episode, "completed")
             logger.info("Episode %s: completed", episode_id)
 
         except Exception as exc:
-            logger.exception("Enrichment failed for episode %s", episode_id)
-            _mark_episode_failed(db, episode, exc)
-            self.retry(countdown=120, exc=exc)
+            db.rollback()
+            retries_used = int(self.request.retries or 0)
+            max_retries = int(self.max_retries or 0)
+            retry_payload = _enrichment_retry_payload(detection_result, next_index)
+            if retries_used >= max_retries:
+                logger.exception("Enrichment failed for episode %s (retries exhausted)", episode_id)
+                _mark_episode_failed(db, episode, exc)
+                raise
+
+            logger.warning(
+                "Enrichment failed for episode %s; retrying in %ss from match index %s (attempt %s/%s)",
+                episode_id,
+                120,
+                retry_payload.get("start_index", 0),
+                retries_used + 1,
+                max_retries,
+                exc_info=exc,
+            )
+            self.retry(countdown=120, args=[retry_payload], exc=exc)
         finally:
             if os.path.exists(audio_path):
                 os.remove(audio_path)
@@ -259,6 +308,12 @@ def _mark_episode_failed(db, episode, exc: Exception):
 
 def _audio_path(episode_id: str) -> str:
     return os.path.join(settings.AUDIO_DIR, f"{episode_id}.mp3")
+
+
+def _enrichment_retry_payload(detection_result: dict, start_index: int) -> dict:
+    payload = dict(detection_result)
+    payload["start_index"] = max(0, int(start_index))
+    return payload
 
 
 def _download_audio(audio_url: str, episode_id: str) -> str:
