@@ -131,3 +131,40 @@ class TestEnrichMention:
         finally:
             settings.LLM_PROVIDER = old_provider
             settings.OPENROUTER_API_KEY = old_key
+
+    @patch("app.services.enrichment_service.httpx.post")
+    def test_openrouter_base_url_variants(self, mock_post):
+        from app.config import settings
+
+        old_provider = settings.LLM_PROVIDER
+        old_key = settings.OPENROUTER_API_KEY
+        old_base = settings.OPENROUTER_BASE_URL
+        try:
+            settings.LLM_PROVIDER = "openrouter"
+            settings.OPENROUTER_API_KEY = "test-key"
+
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "choices": [{"message": {"content": json.dumps({"sentiment": "neutral"})}}]
+            }
+            mock_post.return_value = mock_response
+
+            settings.OPENROUTER_BASE_URL = "https://openrouter.ai"
+            enrich_mention("Acme Corp", "ok")
+            url_1 = mock_post.call_args.kwargs["url"]
+            assert url_1.endswith("/api/v1/chat/completions")
+
+            settings.OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+            enrich_mention("Acme Corp", "ok")
+            url_2 = mock_post.call_args.kwargs["url"]
+            assert url_2.endswith("/api/v1/chat/completions")
+
+            settings.OPENROUTER_BASE_URL = "https://openrouter.ai/v1"
+            enrich_mention("Acme Corp", "ok")
+            url_3 = mock_post.call_args.kwargs["url"]
+            assert url_3.endswith("/v1/chat/completions")
+        finally:
+            settings.LLM_PROVIDER = old_provider
+            settings.OPENROUTER_API_KEY = old_key
+            settings.OPENROUTER_BASE_URL = old_base

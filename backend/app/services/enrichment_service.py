@@ -41,6 +41,9 @@ def enrich_mention(keyword: str, segment: str) -> dict:
 
 def _call_llm(prompt: str) -> str:
     if settings.LLM_PROVIDER == "openrouter":
+        if not settings.OPENROUTER_API_KEY:
+            raise RuntimeError("OPENROUTER_API_KEY is not set")
+
         headers = {
             "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -51,7 +54,7 @@ def _call_llm(prompt: str) -> str:
             headers["X-Title"] = settings.OPENROUTER_APP_NAME
 
         response = httpx.post(
-            f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+            _openrouter_endpoint(),
             headers=headers,
             json={
                 "model": settings.OPENROUTER_MODEL,
@@ -60,7 +63,15 @@ def _call_llm(prompt: str) -> str:
             },
             timeout=120.0,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "OpenRouter request failed: status=%s body=%s",
+                exc.response.status_code,
+                exc.response.text,
+            )
+            raise
         result = response.json()
         return result["choices"][0]["message"]["content"]
 
@@ -96,6 +107,13 @@ def _call_llm(prompt: str) -> str:
     chat_response.raise_for_status()
     result = chat_response.json()
     return result["message"]["content"]
+
+
+def _openrouter_endpoint() -> str:
+    base = settings.OPENROUTER_BASE_URL.rstrip("/")
+    if base.endswith("/api/v1") or base.endswith("/v1"):
+        return f"{base}/chat/completions"
+    return f"{base}/api/v1/chat/completions"
 
 
 def _raise_ollama_model_error_if_needed(response: httpx.Response) -> None:
