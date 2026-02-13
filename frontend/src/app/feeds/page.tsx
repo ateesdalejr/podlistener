@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Rss, Plus, Trash2, Loader2, ExternalLink } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Feed } from "@/types";
@@ -116,6 +117,13 @@ export default function FeedsPage() {
               >
                 <Trash2 className="w-4 h-4" />
               </button>
+              <Link
+                href={`/episodes?feed=${feed.id}`}
+                className="p-2 text-gray-400 hover:text-blue-600 transition-colors"
+                title="View episodes"
+              >
+                <ExternalLink className="w-4 h-4" />
+              </Link>
             </div>
           ))}
         </div>

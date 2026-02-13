@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Radio, Rss, Search, MessageSquare, SlidersHorizontal } from "lucide-react";
+import { Radio, Rss, Search, MessageSquare, SlidersHorizontal, FileText } from "lucide-react";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -11,6 +11,7 @@ export const metadata: Metadata = {
 const navItems = [
   { href: "/", label: "Dashboard", icon: Radio },
   { href: "/feeds", label: "Feeds", icon: Rss },
+  { href: "/episodes", label: "Episodes", icon: FileText },
   { href: "/keywords", label: "Keywords", icon: Search },
   { href: "/mentions", label: "Mentions", icon: MessageSquare },
   { href: "/settings", label: "Settings", icon: SlidersHorizontal },
