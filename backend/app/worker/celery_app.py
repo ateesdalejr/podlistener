@@ -19,7 +19,11 @@ celery.conf.update(
     task_send_sent_event=True,
     task_routes={
         "app.worker.tasks.poll.*": {"queue": "poll"},
-        "app.worker.tasks.process.*": {"queue": "process"},
+        "app.worker.tasks.process.process_episode": {"queue": "process"},
+        "app.worker.tasks.process.download_episode_audio": {"queue": "download"},
+        "app.worker.tasks.process.transcribe_episode_audio": {"queue": "transcription"},
+        "app.worker.tasks.process.detect_episode_keywords": {"queue": "keywords"},
+        "app.worker.tasks.process.enrich_episode_mentions": {"queue": "llm"},
     },
     beat_schedule={
         "poll-all-feeds": {

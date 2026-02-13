@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     PROCESS_EPISODE_SOFT_TIME_LIMIT_SECONDS: int = 1800
     PROCESS_EPISODE_TIME_LIMIT_SECONDS: int = 2100
     INITIAL_IMPORT_EPISODE_LIMIT: int = 10
+    MAX_EPISODES_PER_FEED: int = 10
 
     model_config = {"env_file": ".env"}
 

@@ -43,13 +43,9 @@ def poll_single_feed(self, feed_id: str):
         if data["feed"]["image_url"] and not feed.image_url:
             feed.image_url = data["feed"]["image_url"]
 
-        # For newly added feeds, only ingest a capped number of most recent episodes.
         episodes = data["episodes"]
-        if feed.last_polled_at is None and settings.INITIAL_IMPORT_EPISODE_LIMIT > 0:
-            episodes = episodes[:settings.INITIAL_IMPORT_EPISODE_LIMIT]
 
         new_count = 0
-        new_episode_ids: list[str] = []
         for ep_data in episodes:
             existing = db.query(Episode).filter(Episode.guid == ep_data["guid"]).first()
             if existing:
@@ -67,14 +63,45 @@ def poll_single_feed(self, feed_id: str):
                 status="pending",
             )
             db.add(episode)
-            db.flush()
             new_count += 1
-            new_episode_ids.append(str(episode.id))
 
         feed.last_polled_at = datetime.now(timezone.utc)
         db.commit()
 
-        for episode_id in new_episode_ids:
-            process_episode.delay(episode_id)
+        max_episodes = settings.MAX_EPISODES_PER_FEED
+        if max_episodes > 0:
+            recent_episodes = (
+                db.query(Episode)
+                .filter(Episode.feed_id == feed.id)
+                .order_by(Episode.published_at.desc().nullslast(), Episode.created_at.desc())
+                .limit(max_episodes)
+                .all()
+            )
+        else:
+            recent_episodes = (
+                db.query(Episode)
+                .filter(Episode.feed_id == feed.id)
+                .order_by(Episode.published_at.desc().nullslast(), Episode.created_at.desc())
+                .all()
+            )
 
-        logger.info(f"Feed '{feed.title}': {new_count} new episodes")
+        queued_episode_ids: list[str] = []
+        for episode in recent_episodes:
+            if episode.status != "pending":
+                continue
+            episode.status = "queued"
+            queued_episode_ids.append(str(episode.id))
+
+        if queued_episode_ids:
+            db.commit()
+
+        for episode_id in queued_episode_ids:
+            process_episode.delay(episode_id)
+        queued_count = len(queued_episode_ids)
+
+        logger.info(
+            "Feed '%s': %s new episodes, queued %s for processing",
+            feed.title,
+            new_count,
+            queued_count,
+        )

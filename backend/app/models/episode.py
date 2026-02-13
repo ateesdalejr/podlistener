@@ -18,7 +18,7 @@ class Episode(Base, UUIDMixin, TimestampMixin):
     audio_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String, default="pending")
-    # pending → downloading → transcribing → analyzing → completed / failed
+    # pending → queued → downloading → transcribing → analyzing → completed / failed
     transcript_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

@@ -80,7 +80,7 @@ services:
     command: >
       celery -A app.worker.celery_app worker
       --beat --events --loglevel=info
-      -Q default,poll,process
+      -Q default,poll,process,download,transcription,keywords,llm
       --concurrency=4
 
   flower:
