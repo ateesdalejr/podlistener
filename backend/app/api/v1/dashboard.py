@@ -19,7 +19,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     )
     processing = await db.execute(
         select(func.count(Episode.id)).where(
-            Episode.status.in_(["pending", "downloading", "transcribing", "analyzing"])
+            Episode.status.in_(["downloading", "transcribing", "analyzing"])
         )
     )
     failed = await db.execute(
