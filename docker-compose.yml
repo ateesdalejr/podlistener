@@ -109,7 +109,11 @@ services:
       - api
 
   nginx:
-    image: nginx:1.27-alpine
+    build: ./nginx
+    env_file: .env
+    command: >
+      sh -c "htpasswd -bc /etc/nginx/.htpasswd \"$${NGINX_BASIC_AUTH_USERNAME:-admin}\" \"$${NGINX_BASIC_AUTH_PASSWORD:-change-me}\" &&
+             nginx -g 'daemon off;'"
     ports:
       - "80:80"
     volumes:

@@ -1,4 +1,12 @@
-import type { Feed, Episode, Keyword, Mention, DashboardStats } from "@/types";
+import type {
+  Feed,
+  Episode,
+  Keyword,
+  Mention,
+  DashboardStats,
+  TranscriptionSettings,
+  TranscriptionSettingsUpdate,
+} from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -18,6 +26,15 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 export const api = {
   // Dashboard
   getStats: () => apiFetch<DashboardStats>("/api/v1/dashboard/stats"),
+
+  // Settings
+  getTranscriptionSettings: () =>
+    apiFetch<TranscriptionSettings>("/api/v1/settings/transcription"),
+  updateTranscriptionSettings: (payload: TranscriptionSettingsUpdate) =>
+    apiFetch<TranscriptionSettings>("/api/v1/settings/transcription", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
 
   // Feeds
   getFeeds: () => apiFetch<Feed[]>("/api/v1/feeds"),

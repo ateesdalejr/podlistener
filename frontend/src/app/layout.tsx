@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Radio, Rss, Search, MessageSquare } from "lucide-react";
+import { Radio, Rss, Search, MessageSquare, SlidersHorizontal } from "lucide-react";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -13,6 +13,7 @@ const navItems = [
   { href: "/feeds", label: "Feeds", icon: Rss },
   { href: "/keywords", label: "Keywords", icon: Search },
   { href: "/mentions", label: "Mentions", icon: MessageSquare },
+  { href: "/settings", label: "Settings", icon: SlidersHorizontal },
 ];
 
 export default function RootLayout({

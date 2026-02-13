@@ -56,3 +56,4 @@ See `.env.example` for all config. Main ones:
 - `REDIS_URL` - Celery broker
 - `WHISPER_API_URL` - faster-whisper-server endpoint
 - `OLLAMA_BASE_URL` / `OLLAMA_MODEL` - LLM for enrichment
+- `NGINX_BASIC_AUTH_USERNAME` / `NGINX_BASIC_AUTH_PASSWORD` - credentials for HTTP basic auth at reverse proxy

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import feeds, episodes, keywords, mentions, dashboard
+from app.api.v1 import feeds, episodes, keywords, mentions, dashboard, settings
 
 
 def create_app() -> FastAPI:
@@ -20,6 +20,7 @@ def create_app() -> FastAPI:
     app.include_router(keywords.router, prefix="/api/v1")
     app.include_router(mentions.router, prefix="/api/v1")
     app.include_router(dashboard.router, prefix="/api/v1")
+    app.include_router(settings.router, prefix="/api/v1")
 
     @app.get("/health")
     async def health():

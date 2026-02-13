@@ -57,3 +57,18 @@ export interface DashboardStats {
   episodes_processing: number;
   episodes_failed: number;
 }
+
+export interface TranscriptionSettings {
+  provider: "local" | "external";
+  external_url: string;
+  model: string;
+  has_external_api_key: boolean;
+}
+
+export interface TranscriptionSettingsUpdate {
+  provider: "local" | "external";
+  external_url: string;
+  model: string;
+  external_api_key?: string;
+  clear_external_api_key?: boolean;
+}
