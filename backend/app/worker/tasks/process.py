@@ -91,7 +91,7 @@ def transcribe_episode_audio(self, episode_id: str):
             episode.transcript_text = transcript
             db.commit()
             logger.info("Episode %s: transcription complete", episode_id)
-            return episode_id
+            return {"episode_id": episode_id, "transcription_done": True}
 
         except Exception as exc:
             logger.exception("Transcription failed for episode %s", episode_id)
@@ -106,15 +106,29 @@ def transcribe_episode_audio(self, episode_id: str):
     soft_time_limit=settings.PROCESS_EPISODE_SOFT_TIME_LIMIT_SECONDS,
     time_limit=settings.PROCESS_EPISODE_TIME_LIMIT_SECONDS,
 )
-def detect_episode_keywords(self, episode_id: str):
+def detect_episode_keywords(self, transcription_result):
     """Detect keyword matches from an episode transcript."""
+    # Backward-compatible input handling:
+    # - New chain handoff: {"episode_id": "...", "transcription_done": True}
+    # - Legacy/direct call: "episode_id"
+    if isinstance(transcription_result, dict):
+        episode_id = transcription_result.get("episode_id")
+        transcription_done = bool(transcription_result.get("transcription_done"))
+        if not transcription_done:
+            logger.warning("Episode %s transcription not marked done; retrying", episode_id)
+            self.retry(countdown=10, exc=ValueError("Transcription not complete"))
+            return
+    else:
+        episode_id = transcription_result
+
     with SyncSessionLocal() as db:
         episode = db.query(Episode).filter(Episode.id == episode_id).first()
         if not episode:
             logger.warning("Episode %s not found yet; retrying", episode_id)
             self.retry(countdown=10, exc=ValueError(f"Episode {episode_id} not found"))
             return
-        if not episode.transcript_text:
+        # Empty string is a valid transcript result; None means it is not persisted yet.
+        if episode.transcript_text is None:
             logger.warning("Episode %s transcript missing; retrying", episode_id)
             self.retry(countdown=30, exc=ValueError(f"Episode {episode_id} transcript missing"))
             return
